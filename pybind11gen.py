@@ -5,7 +5,6 @@
 
 import argparse
 import collections
-import inspect
 
 import CppHeaderParser
 
@@ -34,14 +33,21 @@ def _process_fn(fn):
     return [] # TODO
 
 
-def _process_method(clsname, meth, overloaded=False):
+def _process_method(clsname, meth, hooks, overloaded=False):
+
+    # skip destructor
+    if meth.get('destructor', False):
+        return []
+    
     ret = []
     methname = meth['name']
     parameters = meth['parameters']
-
-    # destructor
-    if meth.get('destructor', False):
-        return ret
+    
+    # fix types that are enums
+    for p in parameters:
+        if p.get('enum'):
+            p['raw_type'] = p['enum']
+            p['type'] = p['enum']
     
     # constructor
     if methname == clsname:
@@ -49,26 +55,45 @@ def _process_method(clsname, meth, overloaded=False):
         ret.append('  .def(py::init<%s>())' % params)
     
     else:
-        # assume reference parameters are 'out' parameters?
-        # -> TODO, make this configurable
-        refs = [p for p in parameters if p['reference']]
         
-        if refs:
-            # fix enums
-            for p in parameters:
-                if p.get('enum'):
-                    p['raw_type'] = p['enum']
-                    p['type'] = p['enum']
+        pre = []
+        post = []
+        ret_names = ['__ret']
+        in_params = parameters[:]
+        
+        modified = False
+        
+        for hook in hooks.get('method_hooks', []):
+            if hook(clsname, meth, in_params, ret_names,
+                    pre, post):
+                modified = True
+        
+        if modified:
+        
+            in_args = ''
+            if in_params:
+                in_args = ', ' + ', '.join('%(type)s %(name)s' % p for p in in_params)
             
-            out_vars =  '; '.join('%(raw_type)s %(name)s' % p for p in refs)
-            out_names = ', '.join(p['name'] for p in refs)
-            in_args = ', '.join('%(type)s %(name)s' % p for p in parameters if not p['reference'])
-            if in_args:
-                in_args = ', ' + in_args
+            ret.append('  .def("%(methname)s", [](%(clsname)s &__inst%(in_args)s) {' % locals())
+            
+            if pre:
+                ret.append('    ' + '; '.join(pre) + ';')
             
             meth_params = ', '.join(p['name'] for p in meth['parameters'])
-            fndef = '  .def("%(methname)s", [](%(clsname)s &__inst%(in_args)s) { %(out_vars)s; auto __ret = __inst.%(methname)s(%(meth_params)s); return std::make_tuple(__ret, %(out_names)s); })' % locals()
-            ret.append(fndef)
+            ret.append('    auto __ret = __inst.%(methname)s(%(meth_params)s);' % locals())
+            
+            if post:
+                ret.append('    ' + '; '.join(post) + ';')
+                        
+            if len(ret_names) == 0:
+                pass
+            elif len(ret_names) == 1:
+                ret.append('    return %s;' % ret_names[0])
+            else:
+                ret.append('    return std::make_tuple(%s);' % ', '.join(ret_names))
+                
+            ret.append('  })')
+            
         else:
             overload = ''
             if overloaded:
@@ -83,7 +108,7 @@ def _process_method(clsname, meth, overloaded=False):
     
     return ret
 
-def _process_class(cls):
+def _process_class(cls, hooks):
     
     clsname = cls['name']
     varname = clsname.lower()
@@ -104,10 +129,10 @@ def _process_class(cls):
         # process it
         for ml in meths.values():
             if len(ml) == 1:
-                ret += _process_method(clsname, ml[0])
+                ret += _process_method(clsname, ml[0], hooks)
             else:
                 for mh in ml:                    
-                    ret += _process_method(clsname, mh, True)
+                    ret += _process_method(clsname, mh, hooks, True)
                 
         ret[-1] = ret[-1] + ';'
     
@@ -117,7 +142,7 @@ def _process_class(cls):
     
     return ret
 
-def process_header(fname):
+def process_header(fname, hooks):
     '''Returns a list of lines'''
     
     header = CppHeaderParser.CppHeader(fname)
@@ -132,11 +157,70 @@ def process_header(fname):
     #    output.append('') 
     
     for cls in header.classes.values():
-        output += _process_class(cls)
+        output += _process_class(cls, hooks)
         output.append('')
         
     return output
 
+#
+# Hooks
+#
+
+# Method hook parameters:
+#   clsname: name of the class
+#   method: a method dictionary from cppheaderparser
+#   in_params: copy of method['parameters']
+#   ret_names: variables to return
+#   pre: statements to insert before function call
+#   post: statements to insert after function call
+#   .. returns True if method hook did something 
+
+def _reference_hook(clsname, method,
+                    in_params, ret_names,
+                    pre, post):
+    
+    parameters = method['parameters']
+    refs = [p for p in parameters if p['reference']]
+    if refs:
+        in_params[:] = [p for p in in_params if not p['reference']]
+        pre.extend('%(raw_type)s %(name)s' % p for p in refs)
+        ret_names.extend(p['name'] for p in refs)
+        return True
+        
+        
+
+def _ctr_hook(clsname, method,
+              in_params, ret_names,
+              pre, post):
+    
+    if method['returns'] == 'CTR_Code':
+        ret_names.remove('__ret')
+        post.append('CheckCTRCode(__ret)')
+        return True
+
+
+def process_module(module_name, headers, hooks):
+
+    print()
+    print('#include <pybind11/pybind11.h>')
+    print('namespace py = pybind11;')
+    print()
+    
+    for header in headers:
+        print('#include <%s>' % header) # TODO, not usually the actual path
+        
+    print()
+    print('PYBIND11_PLUGIN(%s) {' % module_name)
+    print()
+    print('    py::module m("%s");' % module_name)
+    print()
+
+    for header in headers:
+        print('    ' + '\n    '.join(process_header(header, hooks)))
+        print()
+        
+    print('    return m.ptr();')
+    print('}')
 
 def main():
     parser = argparse.ArgumentParser()
@@ -144,27 +228,11 @@ def main():
     parser.add_argument('headers', nargs='+')
     
     args = parser.parse_args()
-
-    print('#include <pybind11/pybind11.h>')
-    print('namespace py = pybind11;')
-    print()
     
-    for header in args.headers:
-        print('#include <%s>' % header) # TODO, not usually the actual path
-        
-    print()
-    print('PYBIND11_PLUGIN(%s) {' % args.module_name)
-    print()
-    print('    py::module m("%s");' % args.module_name)
-    print()
-
-    for header in args.headers:
-        print('    ' + '\n    '.join(process_header(header)))
-        print()
-        
-    print('    return m.ptr();')
-    print('}')
-        
+    hooks = {}
+    hooks['method_hooks'] = [_reference_hook, _ctr_hook]
+    
+    process_module(args.module_name, args.headers, hooks)
 
 if __name__ == '__main__':
     main()
