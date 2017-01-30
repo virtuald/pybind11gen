@@ -170,7 +170,7 @@ def process_header(fname, hooks):
     #    output += _process_fn(fn)
     #    output.append('') 
     
-    for cls in header.classes.values():
+    for cls in sorted(header.classes.values(), key=lambda c: c['line_number']):
         output += _process_class(cls, hooks)
         output.append('')
         
