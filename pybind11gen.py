@@ -58,7 +58,10 @@ def _process_method(clsname, meth, hooks, overloaded=False):
         
         pre = []
         post = []
-        ret_names = ['__ret']
+        ret_names = []
+        if meth['returns'] != 'void':
+            ret_names.append('__ret')
+        
         in_params = parameters[:]
         
         modified = False
@@ -80,7 +83,18 @@ def _process_method(clsname, meth, hooks, overloaded=False):
                 ret.append('    ' + '; '.join(pre) + ';')
             
             meth_params = ', '.join(p['name'] for p in meth['parameters'])
-            ret.append('    auto __ret = __inst.%(methname)s(%(meth_params)s);' % locals())
+            
+            fnret = 'auto __ret = '
+            
+            if '__ret' not in ret_names:
+                fnret = ''
+            
+            if not post:
+                if ret_names == ['__ret']:
+                    ret_names = []
+                    fnret = 'return '
+            
+            ret.append('    %(fnret)s__inst.%(methname)s(%(meth_params)s);' % locals())
             
             if post:
                 ret.append('    ' + '; '.join(post) + ';')
