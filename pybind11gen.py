@@ -8,6 +8,12 @@ import collections
 
 import CppHeaderParser
 
+MethodHookData = collections.namedtuple('MethodHookData', [
+    'methname',
+    'in_params', 'ret_names',
+    'pre', 'post'
+])
+
 
 def _process_enum(enum, clsname=None):
 
@@ -66,18 +72,24 @@ def _process_method(clsname, meth, hooks, overloaded=False):
         
         modified = False
         
+        # data that hooks can modify
+        hook_data = MethodHookData(methname,
+                                   in_params, ret_names,
+                                   pre, post)
+        
         for hook in hooks.get('method_hooks', []):
-            if hook(clsname, meth, in_params, ret_names,
-                    pre, post):
+            if hook(clsname, meth, hook_data):
                 modified = True
         
-        if modified:
+        py_methname = hook_data.methname
         
+        if modified:
+            
             in_args = ''
             if in_params:
                 in_args = ', ' + ', '.join('%(type)s %(name)s' % p for p in in_params)
             
-            ret.append('  .def("%(methname)s", [](%(clsname)s &__inst%(in_args)s) {' % locals())
+            ret.append('  .def("%(py_methname)s", [](%(clsname)s &__inst%(in_args)s) {' % locals())
             
             if pre:
                 ret.append('    ' + '; '.join(pre) + ';')
@@ -118,7 +130,7 @@ def _process_method(clsname, meth, hooks, overloaded=False):
                     clsname, params
                 )
             
-            ret.append('  .def("%s", %s&%s::%s)' % (methname, overload, clsname, methname))
+            ret.append('  .def("%s", %s&%s::%s)' % (py_methname, overload, clsname, methname))
     
     return ret
 
@@ -189,27 +201,23 @@ def process_header(fname, hooks):
 #   post: statements to insert after function call
 #   .. returns True if method hook did something 
 
-def _reference_hook(clsname, method,
-                    in_params, ret_names,
-                    pre, post):
+def _reference_hook(clsname, method, hook_data):
     
     parameters = method['parameters']
     refs = [p for p in parameters if p['reference']]
     if refs:
-        in_params[:] = [p for p in in_params if not p['reference']]
-        pre.extend('%(raw_type)s %(name)s' % p for p in refs)
-        ret_names.extend(p['name'] for p in refs)
+        hook_data.in_params[:] = [p for p in hook_data.in_params if not p['reference']]
+        hook_data.pre.extend('%(raw_type)s %(name)s' % p for p in refs)
+        hook_data.ret_names.extend(p['name'] for p in refs)
         return True
         
         
 
-def _ctr_hook(clsname, method,
-              in_params, ret_names,
-              pre, post):
+def _ctr_hook(clsname, method, hook_data):
     
     if method['returns'] == 'CTR_Code':
-        ret_names.remove('__ret')
-        post.append('CheckCTRCode(__ret)')
+        hook_data.ret_names.remove('__ret')
+        hook_data.post.append('CheckCTRCode(__ret)')
         return True
 
 
