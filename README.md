@@ -1,8 +1,8 @@
 pybind11gen
 ===========
 
-**Note**: For a more flexible mechanism to custom generate your own contents
-from header files, see https://github.com/virtuald/header2whatever
+***Note**: For a more flexible mechanism to custom generate your own contents
+from header files, see https://github.com/virtuald/header2whatever/*
 
 Pure python pybind11 bindings generator that uses CppHeaderParser to parse C++
 code and generate pybind11 compatible output.
